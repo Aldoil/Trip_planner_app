@@ -1238,17 +1238,27 @@ def show_map(lang="en"):
         st.markdown(f"### {t('add_new_place', lang)}")
         
         # Geocoding section (outside form)
-        place_name_for_geocode = st.text_input("Place name for coordinates lookup", key="geocode_place_name", placeholder="Enter place name to find coordinates")
-        if place_name_for_geocode:
-            if st.button(t("find_coordinates", lang), key="find_coords_new"):
-                with st.spinner("Searching for location..."):
-                    city_info = geocode_place_name(place_name_for_geocode.strip())
-                    if city_info:
-                        st.session_state.new_place_lat = city_info["lat"]
-                        st.session_state.new_place_lon = city_info["lon"]
-                        st.success(f"✅ {t('coordinates_found', lang)} {city_info['lat']:.4f}, {city_info['lon']:.4f}")
-                    else:
-                        st.error(t("coordinates_not_found", lang))
+        st.markdown("**Find Coordinates:**")
+        geocode_col1, geocode_col2 = st.columns([3, 1])
+        with geocode_col1:
+            place_name_for_geocode = st.text_input(
+                "Place name for coordinates lookup", 
+                key="geocode_place_name", 
+                placeholder="Enter place name to find coordinates",
+                label_visibility="collapsed"
+            )
+        with geocode_col2:
+            search_clicked = st.button("🔍 " + t("find_coordinates", lang), key="find_coords_new", use_container_width=True)
+        
+        if search_clicked and place_name_for_geocode:
+            with st.spinner("Searching for location..."):
+                city_info = geocode_place_name(place_name_for_geocode.strip())
+                if city_info:
+                    st.session_state.new_place_lat = city_info["lat"]
+                    st.session_state.new_place_lon = city_info["lon"]
+                    st.success(f"✅ {t('coordinates_found', lang)} {city_info['lat']:.4f}, {city_info['lon']:.4f}")
+                else:
+                    st.error(t("coordinates_not_found", lang))
         
         with st.form("add_place_form"):
             place_name = st.text_input(t("place_name", lang))
