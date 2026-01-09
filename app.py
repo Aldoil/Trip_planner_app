@@ -90,6 +90,7 @@ BUDGET_FILE = os.path.join(DATA_DIR, "budget.json")
 NOTES_FILE = os.path.join(DATA_DIR, "notes.json")
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
 WEATHER_FILE = os.path.join(DATA_DIR, "weather.json")
+EXCHANGE_RATE_FILE = os.path.join(DATA_DIR, "exchange_rates.json")
 
 # Ensure data directory exists
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -296,6 +297,110 @@ def load_weather():
 def save_weather(data):
     with open(WEATHER_FILE, 'w') as f:
         json.dump(data, f, indent=2)
+
+def load_exchange_rates():
+    """Load cached exchange rates"""
+    if os.path.exists(EXCHANGE_RATE_FILE):
+        with open(EXCHANGE_RATE_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+def save_exchange_rates(data):
+    """Save exchange rates cache"""
+    with open(EXCHANGE_RATE_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
+
+def get_usd_to_pln_rate(date_str=None):
+    """Get USD to PLN exchange rate from free API (exchangerate.host)"""
+    if date_str is None:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+    
+    # Check cache first
+    rates_cache = load_exchange_rates()
+    if date_str in rates_cache:
+        cached_rate = rates_cache[date_str]
+        # Check if cache is from today (still valid)
+        if cached_rate.get("date") == date_str:
+            return cached_rate.get("rate")
+    
+    try:
+        # Try exchangerate-api.com (free tier, no API key needed for basic usage)
+        # Format: YYYY-MM-DD -> YYYYMMDD for historical API
+        date_formatted = date_str.replace("-", "")
+        url = f"https://api.exchangerate-api.com/v4/historical/USD/{date_formatted}"
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if "rates" in data and "PLN" in data["rates"]:
+                rate = data["rates"]["PLN"]
+                if rate:
+                    # Cache the rate
+                    rates_cache[date_str] = {
+                        "rate": rate,
+                        "date": date_str,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    save_exchange_rates(rates_cache)
+                    return rate
+    except Exception as e:
+        pass
+    
+    # Fallback: Try current rate API (for today)
+    try:
+        if date_str == datetime.now().strftime("%Y-%m-%d"):
+            url = "https://api.exchangerate-api.com/v4/latest/USD"
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if "rates" in data and "PLN" in data["rates"]:
+                    rate = data["rates"]["PLN"]
+                    if rate:
+                        # Cache the rate
+                        rates_cache[date_str] = {
+                            "rate": rate,
+                            "date": date_str,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        save_exchange_rates(rates_cache)
+                        return rate
+    except Exception as e:
+        pass
+    
+    # Fallback to exchangerate.host
+    try:
+        url = f"https://api.exchangerate.host/{date_str}"
+        params = {
+            "base": "USD",
+            "symbols": "PLN"
+        }
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("success") and "rates" in data:
+                rate = data["rates"].get("PLN")
+                if rate:
+                    # Cache the rate
+                    rates_cache[date_str] = {
+                        "rate": rate,
+                        "date": date_str,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    save_exchange_rates(rates_cache)
+                    return rate
+    except Exception as e:
+        pass
+    
+    # Fallback to cached rate if available (even if old)
+    if rates_cache:
+        # Get most recent rate
+        latest_date = max(rates_cache.keys())
+        return rates_cache[latest_date].get("rate")
+    
+    # Final fallback - approximate rate
+    return 4.0  # Approximate USD/PLN rate
 
 def get_city_from_coordinates(lat, lon):
     """Get city name from coordinates using Nominatim (OpenStreetMap) - free, no API key"""
@@ -736,6 +841,14 @@ TRANSLATIONS = {
         "number_expenses": "Number of Expenses",
         "expense_desc": "Description",
         "amount_usd": "Amount (USD)",
+        "amount_pln": "Amount (PLN)",
+        "currency": "Currency",
+        "usd": "USD",
+        "pln": "PLN",
+        "display_currency": "Display Currency",
+        "convert_to": "Convert all expenses to",
+        "exchange_rate": "Exchange Rate",
+        "usd_to_pln": "USD to PLN",
         "split_expense": "Split this expense among people",
         "select_people": "Select people to split with",
         "add_expense": "Add Expense",
@@ -950,6 +1063,14 @@ TRANSLATIONS = {
         "number_expenses": "Liczba Wydatkow",
         "expense_desc": "Opis",
         "amount_usd": "Kwota (USD)",
+        "amount_pln": "Kwota (PLN)",
+        "currency": "Waluta",
+        "usd": "USD",
+        "pln": "PLN",
+        "display_currency": "Waluta Wyswietlania",
+        "convert_to": "Konwertuj wszystkie wydatki na",
+        "exchange_rate": "Kurs Wymiany",
+        "usd_to_pln": "USD do PLN",
         "split_expense": "Podziel ten wydatek miedzy osoby",
         "select_people": "Wybierz osoby do podzialu",
         "add_expense": "Dodaj Wydatek",
@@ -1964,16 +2085,65 @@ def show_budget(lang="en"):
     
     budget_data = load_budget()
     expenses = budget_data.get("expenses", [])
+    
+    # Migration: Add currency field to old expenses (default to USD)
+    expenses_updated = False
+    for exp in expenses:
+        if "currency" not in exp:
+            exp["currency"] = "USD"
+            expenses_updated = True
+    if expenses_updated:
+        budget_data["expenses"] = expenses
+        save_budget(budget_data)
+    
     users_data = load_users()
     users_list = users_data.get("users", [])
     
-    # Calculate totals
-    total_spent = sum(exp.get("amount", 0) for exp in expenses)
+    # Currency converter for display
+    st.markdown("**" + t("display_currency", lang) + ":**")
+    display_currency = st.radio(
+        t("convert_to", lang),
+        [t("usd", lang), t("pln", lang)],
+        horizontal=True,
+        key="display_currency"
+    )
+    
+    # Get exchange rate
+    exchange_rate = get_usd_to_pln_rate()
+    if display_currency == t("pln", lang):
+        st.info(f"💱 {t('exchange_rate', lang)}: {t('usd_to_pln', lang)} = {exchange_rate:.4f}")
+    
+    # Convert function
+    def convert_amount(amount, from_currency, to_currency):
+        """Convert amount between USD and PLN"""
+        if from_currency == to_currency:
+            return amount
+        if from_currency == "USD" and to_currency == "PLN":
+            return amount * exchange_rate
+        elif from_currency == "PLN" and to_currency == "USD":
+            return amount / exchange_rate
+        return amount
+    
+    # Calculate totals in selected currency
+    total_spent_usd = 0
+    total_spent_pln = 0
+    for exp in expenses:
+        exp_currency = exp.get("currency", "USD")
+        exp_amount = exp.get("amount", 0)
+        if exp_currency == "USD":
+            total_spent_usd += exp_amount
+            total_spent_pln += exp_amount * exchange_rate
+        else:  # PLN
+            total_spent_pln += exp_amount
+            total_spent_usd += exp_amount / exchange_rate
+    
+    total_spent = total_spent_usd if display_currency == t("usd", lang) else total_spent_pln
+    currency_symbol = "$" if display_currency == t("usd", lang) else "PLN"
     
     # Summary metrics
     col1, col2 = st.columns(2)
     with col1:
-        st.metric(t("total_expenses", lang), f"${total_spent:,.2f}")
+        st.metric(t("total_expenses", lang), f"{currency_symbol}{total_spent:,.2f}")
     with col2:
         st.metric(t("number_expenses", lang), len(expenses))
     
@@ -1981,20 +2151,24 @@ def show_budget(lang="en"):
     
     # Add expense
     with st.form("add_expense"):
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             expense_desc = st.text_input(t("expense_desc", lang))
         with col2:
-            expense_amount = st.number_input(t("amount_usd", lang), min_value=0.0, step=10.0)
+            expense_currency = st.selectbox(t("currency", lang), [t("usd", lang), t("pln", lang)], key="expense_currency")
+            currency_code = "USD" if expense_currency == t("usd", lang) else "PLN"
+            amount_label = t("amount_usd", lang) if currency_code == "USD" else t("amount_pln", lang)
+            expense_amount = st.number_input(amount_label, min_value=0.0, step=10.0, key="expense_amount")
         with col3:
             # Store categories in English, display in selected language
             category_options_en = ["Food", "Transportation", "Accommodation", "Activities", "Shopping", "Other"]
             category_options_display = [t("food", lang), t("transportation", lang), t("accommodation", lang), t("activities", lang), t("shopping", lang), t("other", lang)]
             selected_category_idx = st.selectbox(t("category", lang), range(len(category_options_display)), format_func=lambda x: category_options_display[x])
             expense_category = category_options_en[selected_category_idx]
+        with col4:
+            # Split expense option
+            split_expense = st.checkbox(t("split_expense", lang), key="split_expense")
         
-        # Split expense option
-        split_expense = st.checkbox(t("split_expense", lang), key="split_expense")
         selected_users = []
         if split_expense and users_list:
             selected_users = st.multiselect(t("select_people", lang), users_list, default=users_list, key="expense_users")
@@ -2005,6 +2179,7 @@ def show_budget(lang="en"):
                     "id": max([e.get("id", 0) for e in expenses] + [0]) + 1,
                     "description": expense_desc,
                     "amount": expense_amount,
+                    "currency": currency_code,
                     "category": expense_category,
                     "date": datetime.now().strftime("%Y-%m-%d"),
                     "split": split_expense,
@@ -2029,10 +2204,16 @@ def show_budget(lang="en"):
             category_counts = {}
             category_map = {"Food": t("food", lang), "Transportation": t("transportation", lang), "Accommodation": t("accommodation", lang), 
                           "Activities": t("activities", lang), "Shopping": t("shopping", lang), "Other": t("other", lang)}
+            target_currency = "USD" if display_currency == t("usd", lang) else "PLN"
+            
             for exp in expenses:
                 cat_en = exp.get("category", "Other")
                 cat_display = category_map.get(cat_en, cat_en)
-                category_totals[cat_display] = category_totals.get(cat_display, 0) + exp.get("amount", 0)
+                exp_currency = exp.get("currency", "USD")
+                exp_amount = exp.get("amount", 0)
+                # Convert to display currency
+                converted_amount = convert_amount(exp_amount, exp_currency, target_currency)
+                category_totals[cat_display] = category_totals.get(cat_display, 0) + converted_amount
                 category_counts[cat_display] = category_counts.get(cat_display, 0) + 1
             
             if category_totals:
@@ -2043,7 +2224,7 @@ def show_budget(lang="en"):
                 })
                 chart = alt.Chart(df_categories).mark_bar().encode(
                     x=alt.X(t("category", lang), sort='-y', title=t("category", lang)),
-                    y=alt.Y(t("amount", lang), title=f"{t('amount', lang)} ($)"),
+                    y=alt.Y(t("amount", lang), title=f"{t('amount', lang)} ({currency_symbol})"),
                     color=alt.Color(t("category", lang), scale=alt.Scale(scheme='category10'))
                 ).properties(width=600, height=400)
                 st.altair_chart(chart, use_container_width=True)
@@ -2055,7 +2236,7 @@ def show_budget(lang="en"):
                     with col1:
                         st.write(f"**{cat}**")
                     with col2:
-                        st.write(f"${total:,.2f}")
+                        st.write(f"{currency_symbol}{total:,.2f}")
                     with col3:
                         st.write(f"{category_counts[cat]} {t('expense', lang)}")
         
@@ -2065,11 +2246,17 @@ def show_budget(lang="en"):
                 # Calculate per-person totals
                 user_totals = {}
                 user_expense_counts = {}
+                target_currency = "USD" if display_currency == t("usd", lang) else "PLN"
                 
                 for exp in expenses:
+                    exp_currency = exp.get("currency", "USD")
+                    exp_amount = exp.get("amount", 0)
+                    # Convert to display currency
+                    converted_amount = convert_amount(exp_amount, exp_currency, target_currency)
+                    
                     if exp.get("split") and exp.get("split_users"):
                         # Split expense
-                        per_person = exp.get("amount", 0) / len(exp.get("split_users", []))
+                        per_person = converted_amount / len(exp.get("split_users", []))
                         for user in exp.get("split_users", []):
                             user_totals[user] = user_totals.get(user, 0) + per_person
                             user_expense_counts[user] = user_expense_counts.get(user, 0) + 1
@@ -2078,7 +2265,7 @@ def show_budget(lang="en"):
                         if "Group" not in user_totals:
                             user_totals["Group"] = 0
                             user_expense_counts["Group"] = 0
-                        user_totals["Group"] = user_totals.get("Group", 0) + exp.get("amount", 0)
+                        user_totals["Group"] = user_totals.get("Group", 0) + converted_amount
                         user_expense_counts["Group"] = user_expense_counts.get("Group", 0) + 1
                 
                 if user_totals:
@@ -2091,7 +2278,7 @@ def show_budget(lang="en"):
                     color_palette = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E2']
                     chart = alt.Chart(df_persons).mark_bar().encode(
                         x=alt.X('Person', sort='-y', title='Person'),
-                        y=alt.Y('Amount', title=f"{t('amount', lang)} ($)"),
+                        y=alt.Y('Amount', title=f"{t('amount', lang)} ({currency_symbol})"),
                         color=alt.Color('Person', scale=alt.Scale(domain=list(user_totals.keys()), 
                                                                    range=color_palette[:len(user_totals)]))
                     ).properties(width=600, height=400)
@@ -2104,7 +2291,7 @@ def show_budget(lang="en"):
                         with col1:
                             st.write(f"**{user}**")
                         with col2:
-                            st.write(f"${total:,.2f}")
+                            st.write(f"{currency_symbol}{total:,.2f}")
                         with col3:
                             st.write(f"{user_expense_counts.get(user, 0)} {t('expense', lang)}")
                 else:
@@ -2115,13 +2302,20 @@ def show_budget(lang="en"):
         with summary_tab3:
             st.subheader(t("all_expenses", lang))
             # List expenses
+            target_currency = "USD" if display_currency == t("usd", lang) else "PLN"
+            
             for exp in sorted(expenses, key=lambda x: x.get("date", ""), reverse=True):
+                exp_currency = exp.get("currency", "USD")
+                exp_amount = exp.get("amount", 0)
+                # Convert to display currency
+                converted_amount = convert_amount(exp_amount, exp_currency, target_currency)
+                
                 split_info = ""
                 if exp.get("split") and exp.get("split_users"):
                     num_people = len(exp.get("split_users", []))
                     if num_people > 0:
-                        per_person = exp.get("amount", 0) / num_people
-                        split_info = f" | {t('split_among', lang)}: ${per_person:.2f} {t('per_person', lang).lower()} ({', '.join(exp.get('split_users', []))})"
+                        per_person = converted_amount / num_people
+                        split_info = f" | {t('split_among', lang)}: {currency_symbol}{per_person:.2f} {t('per_person', lang).lower()} ({', '.join(exp.get('split_users', []))})"
                 
                 # Translate category for display
                 cat_en = exp.get("category", "Other")
@@ -2129,15 +2323,21 @@ def show_budget(lang="en"):
                               "Activities": t("activities", lang), "Shopping": t("shopping", lang), "Other": t("other", lang)}
                 cat_display = category_map.get(cat_en, cat_en)
                 
-                with st.expander(f"${exp['amount']:.2f} - {exp['description']} ({cat_display}){split_info}"):
+                # Show original currency if different from display
+                currency_info = ""
+                if exp_currency != target_currency:
+                    currency_info = f" ({exp_currency} {exp_amount:.2f})"
+                
+                with st.expander(f"{currency_symbol}{converted_amount:.2f}{currency_info} - {exp['description']} ({cat_display}){split_info}"):
                     st.write(f"**{t('date', lang)}:** {exp.get('date', 'N/A')}")
+                    st.write(f"**{t('currency', lang)}:** {exp_currency}")
                     st.write(f"**{t('category', lang)}:** {cat_display}")
                     if exp.get("split") and exp.get("split_users"):
                         num_people = len(exp.get("split_users", []))
                         if num_people > 0:
-                            per_person = exp.get("amount", 0) / num_people
+                            per_person = converted_amount / num_people
                             st.write(f"**{t('split_among', lang)}:** {', '.join(exp.get('split_users', []))}")
-                            st.write(f"**{t('per_person', lang)}:** ${per_person:.2f}")
+                            st.write(f"**{t('per_person', lang)}:** {currency_symbol}{per_person:.2f}")
                     else:
                         st.write(f"**{t('type', lang)}:** {t('group_expense', lang)}")
                     if st.button(t("delete", lang), key=f"del_exp_{exp['id']}"):
