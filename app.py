@@ -848,8 +848,7 @@ TRANSLATIONS = {
         "convert_to": "Convert all expenses to",
         "exchange_rate": "Exchange Rate",
         "usd_to_pln": "USD to PLN",
-        "split_expense": "Split this expense among people",
-        "select_people": "Select people to split with",
+        "select_people": "Select people for this expense",
         "add_expense": "Add Expense",
         "expenses_by_category": "📊 By Category",
         "expenses_by_person": "👥 By Person",
@@ -870,6 +869,7 @@ TRANSLATIONS = {
         "accommodation": "Accommodation",
         "activities": "Activities",
         "shopping": "Shopping",
+        "flights": "Flights",
         "other": "Other",
         # Notes
         "notes_header": "📝 Trip Notes",
@@ -1069,8 +1069,7 @@ TRANSLATIONS = {
         "convert_to": "Konwertuj wszystkie wydatki na",
         "exchange_rate": "Kurs Wymiany",
         "usd_to_pln": "USD do PLN",
-        "split_expense": "Podziel ten wydatek miedzy osoby",
-        "select_people": "Wybierz osoby do podzialu",
+        "select_people": "Wybierz osoby dla tego wydatku",
         "add_expense": "Dodaj Wydatek",
         "expenses_by_category": "📊 Wedlug Kategorii",
         "expenses_by_person": "👥 Wedlug Osoby",
@@ -1091,6 +1090,7 @@ TRANSLATIONS = {
         "accommodation": "Nocleg",
         "activities": "Atrakcje",
         "shopping": "Zakupy",
+        "flights": "Loty",
         "other": "Inne",
         # Notes
         "notes_header": "📝 Notatki z Podrozy",
@@ -2149,7 +2149,7 @@ def show_budget(lang="en"):
     
     # Add expense
     with st.form("add_expense"):
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3 = st.columns(3)
         with col1:
             expense_desc = st.text_input(t("expense_desc", lang))
         with col2:
@@ -2158,17 +2158,18 @@ def show_budget(lang="en"):
             expense_amount = st.number_input(t("amount", lang), min_value=0.0, step=10.0, key="expense_amount")
         with col3:
             # Store categories in English, display in selected language
-            category_options_en = ["Food", "Transportation", "Accommodation", "Activities", "Shopping", "Other"]
-            category_options_display = [t("food", lang), t("transportation", lang), t("accommodation", lang), t("activities", lang), t("shopping", lang), t("other", lang)]
+            category_options_en = ["Food", "Transportation", "Accommodation", "Activities", "Shopping", "Flights", "Other"]
+            category_options_display = [t("food", lang), t("transportation", lang), t("accommodation", lang), t("activities", lang), t("shopping", lang), t("flights", lang), t("other", lang)]
             selected_category_idx = st.selectbox(t("category", lang), range(len(category_options_display)), format_func=lambda x: category_options_display[x])
             expense_category = category_options_en[selected_category_idx]
-        with col4:
-            # Split expense option
-            split_expense = st.checkbox(t("split_expense", lang), key="split_expense")
         
+        # Always show person selection
         selected_users = []
-        if split_expense and users_list:
-            selected_users = st.multiselect(t("select_people", lang), users_list, default=users_list, key="expense_users")
+        if users_list:
+            selected_users = st.multiselect(t("select_people", lang), users_list, key="expense_users")
+        
+        # Automatically split if more than one person selected
+        split_expense = len(selected_users) > 1
         
         if st.form_submit_button(t("add_expense", lang)):
             if expense_desc and expense_amount > 0:
@@ -2180,7 +2181,7 @@ def show_budget(lang="en"):
                     "category": expense_category,
                     "date": datetime.now().strftime("%Y-%m-%d"),
                     "split": split_expense,
-                    "split_users": selected_users if split_expense else []
+                    "split_users": selected_users
                 }
                 expenses.append(expense_data)
                 budget_data["expenses"] = expenses
@@ -2200,7 +2201,7 @@ def show_budget(lang="en"):
             category_totals = {}
             category_counts = {}
             category_map = {"Food": t("food", lang), "Transportation": t("transportation", lang), "Accommodation": t("accommodation", lang), 
-                          "Activities": t("activities", lang), "Shopping": t("shopping", lang), "Other": t("other", lang)}
+                          "Activities": t("activities", lang), "Shopping": t("shopping", lang), "Flights": t("flights", lang), "Other": t("other", lang)}
             target_currency = "USD" if display_currency == t("usd", lang) else "PLN"
             
             for exp in expenses:
@@ -2252,18 +2253,17 @@ def show_budget(lang="en"):
                     converted_amount = convert_amount(exp_amount, exp_currency, target_currency)
                     
                     if exp.get("split") and exp.get("split_users"):
-                        # Split expense
+                        # Split expense - divide among selected people
                         per_person = converted_amount / len(exp.get("split_users", []))
                         for user in exp.get("split_users", []):
                             user_totals[user] = user_totals.get(user, 0) + per_person
                             user_expense_counts[user] = user_expense_counts.get(user, 0) + 1
-                    else:
-                        # Not split - show as "Group" expense
-                        if "Group" not in user_totals:
-                            user_totals["Group"] = 0
-                            user_expense_counts["Group"] = 0
-                        user_totals["Group"] = user_totals.get("Group", 0) + converted_amount
-                        user_expense_counts["Group"] = user_expense_counts.get("Group", 0) + 1
+                    elif exp.get("split_users") and len(exp.get("split_users", [])) == 1:
+                        # Single person expense (not split, but assigned to one person)
+                        user = exp.get("split_users", [])[0]
+                        user_totals[user] = user_totals.get(user, 0) + converted_amount
+                        user_expense_counts[user] = user_expense_counts.get(user, 0) + 1
+                    # If no users selected, don't show in per-person chart
                 
                 if user_totals:
                     # Show chart with different colors per person
@@ -2308,16 +2308,20 @@ def show_budget(lang="en"):
                 converted_amount = convert_amount(exp_amount, exp_currency, target_currency)
                 
                 split_info = ""
-                if exp.get("split") and exp.get("split_users"):
-                    num_people = len(exp.get("split_users", []))
-                    if num_people > 0:
+                if exp.get("split_users"):
+                    if exp.get("split") and len(exp.get("split_users", [])) > 1:
+                        # Split expense
+                        num_people = len(exp.get("split_users", []))
                         per_person = converted_amount / num_people
                         split_info = f" | {t('split_among', lang)}: {currency_symbol}{per_person:.2f} {t('per_person', lang).lower()} ({', '.join(exp.get('split_users', []))})"
+                    elif len(exp.get("split_users", [])) == 1:
+                        # Single person expense
+                        split_info = f" | {exp.get('split_users', [])[0]}"
                 
                 # Translate category for display
                 cat_en = exp.get("category", "Other")
                 category_map = {"Food": t("food", lang), "Transportation": t("transportation", lang), "Accommodation": t("accommodation", lang), 
-                              "Activities": t("activities", lang), "Shopping": t("shopping", lang), "Other": t("other", lang)}
+                              "Activities": t("activities", lang), "Shopping": t("shopping", lang), "Flights": t("flights", lang), "Other": t("other", lang)}
                 cat_display = category_map.get(cat_en, cat_en)
                 
                 # Show original currency if different from display
@@ -2329,14 +2333,16 @@ def show_budget(lang="en"):
                     st.write(f"**{t('date', lang)}:** {exp.get('date', 'N/A')}")
                     st.write(f"**{t('currency', lang)}:** {exp_currency}")
                     st.write(f"**{t('category', lang)}:** {cat_display}")
-                    if exp.get("split") and exp.get("split_users"):
-                        num_people = len(exp.get("split_users", []))
-                        if num_people > 0:
+                    if exp.get("split_users"):
+                        if exp.get("split") and len(exp.get("split_users", [])) > 1:
+                            # Split expense
+                            num_people = len(exp.get("split_users", []))
                             per_person = converted_amount / num_people
                             st.write(f"**{t('split_among', lang)}:** {', '.join(exp.get('split_users', []))}")
                             st.write(f"**{t('per_person', lang)}:** {currency_symbol}{per_person:.2f}")
-                    else:
-                        st.write(f"**{t('type', lang)}:** {t('group_expense', lang)}")
+                        elif len(exp.get("split_users", [])) == 1:
+                            # Single person expense
+                            st.write(f"**{t('select_people', lang)}:** {exp.get('split_users', [])[0]}")
                     if st.button(t("delete", lang), key=f"del_exp_{exp['id']}"):
                         expenses.remove(exp)
                         budget_data["expenses"] = expenses
