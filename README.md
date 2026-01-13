@@ -1,4 +1,4 @@
-# ✈️ USA Trip Planner
+# ✈️ Trip Planner
 
 A comprehensive, all-in-one trip planning application for US trip. Perfect for planning and managing your trip on mobile devices during your travels.
 
